@@ -2,51 +2,44 @@ public class UnidadeControle {
 
     private MPC mpc;
     private MIR mir;
-    private Memoria memoriaControle;
+    private MemoriaControle memoriaControle;
 
-    public UnidadeControle(MPC mpc, MIR mir,
-                           Memoria memoriaControle) {
+    public UnidadeControle(MPC mpc, MIR mir, MemoriaControle memoriaControle) {
         this.mpc = mpc;
         this.mir = mir;
         this.memoriaControle = memoriaControle;
     }
 
-    // Busca a microinstrucao na memoria de controle
+    // Subciclo 1: Busca a microinstrução na memória de controle e carrega no MIR
     public void buscarMicroinstrucao() {
         int endereco = mpc.getValor();
-
-        int microinstrucao =
-            memoriaControle.leitura(endereco);
-
+        int microinstrucao = memoriaControle.leitura(endereco);
         mir.carregar(microinstrucao);
     }
 
-    // Decodifica os campos da microinstrucao
-    public void decodificar() {
+    // Calcula e atualiza o próximo valor do MPC conforme COND e flags da ULA
+    public void atualizarMPC(boolean flagN, boolean flagZ, Multiplexador mux) {
+        int cond = mir.getCOND();
+        int addr = mir.getADDR();
+        int proximoSequencial = mpc.incrementar();
 
-        int amux = mir.getAMUX(0);
-        int cond = mir.getCOND(0);
-        int alu = mir.getALU(0);
-        int sh = mir.getSH(0);
+        int saltar = 0;
+        switch (cond) {
+            case 0: // Nunca salta (avança sequencialmente)
+                saltar = 0;
+                break;
+            case 1: // JMPN: salta se N == 1
+                saltar = flagN ? 1 : 0;
+                break;
+            case 2: // JMPZ: salta se Z == 1
+                saltar = flagZ ? 1 : 0;
+                break;
+            case 3: // JMP: salta incondicionalmente
+                saltar = 1;
+                break;
+        }
 
-        int mbr = mir.getMBR(0);
-        int mar = mir.getMAR(0);
-        int rd = mir.getRD(0);
-        int wr = mir.getWR(0);
-        int enc = mir.getENC(0);
-
-        int c = mir.getC(0);
-        int b = mir.getB(0);
-        int a = mir.getA(0);
-        int addr = mir.getADDR(0);
-
-        // Aqui serão utilizados os sinais
-        // para coordenar os componentes.
-    }
-
-    // Executa um ciclo de busca e decodificacao
-    public void ciclo() {
-        buscarMicroinstrucao();
-        decodificar();
+        int proximoEndereco = mux.saida(proximoSequencial, addr, saltar);
+        mpc.carregar(proximoEndereco);
     }
 }

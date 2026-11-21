@@ -147,4 +147,28 @@ public class Cache {
             }
         }
     }
+
+    public int getQuantidadeLinhas() {
+        return quantidadeLinhas;
+    }
+
+    public int getTamanhoBloco() {
+        return tamanhoBloco;
+    }
+
+    public int getTagLinha(int indice) {
+        return linhas[indice].tag;
+    }
+
+    public boolean isValidoLinha(int indice) {
+        return linhas[indice].valido;
+    }
+
+    public boolean isDirtyLinha(int indice) {
+        return linhas[indice].dirty;
+    }
+
+    public int[] getDadosLinha(int indice) {
+        return linhas[indice].dados;
+    }
 }

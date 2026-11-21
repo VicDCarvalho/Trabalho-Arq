@@ -1,15 +1,29 @@
-import java.util.Arrays;
+public class MemoriaControle {
+    private int[] microinstrucoes;
 
-public class MemoriaControle extends Memoria {
-    private static final int TAMANHO = 256;
-
-    public MemoriaControle(int[] vetor){
-        super(TAMANHO);
-        this.dados = Arrays.copyOf(vetor, TAMANHO);
+    public MemoriaControle(int[] microprograma) {
+        this.microinstrucoes = new int[256];
+        if (microprograma != null) {
+            int limite = Math.min(microprograma.length, 256);
+            System.arraycopy(microprograma, 0, this.microinstrucoes, 0, limite);
+        }
     }
 
-    @Override 
-    public int leitura(int endereco){
-        return this.dados[endereco];
+    public int leitura(int endereco) {
+        if (endereco < 0 || endereco >= microinstrucoes.length) {
+            throw new IndexOutOfBoundsException("Endereço da memória de controle inválido: " + endereco);
+        }
+        return this.microinstrucoes[endereco];
+    }
+
+    public void escrita(int microinstrucao, int endereco) {
+        if (endereco < 0 || endereco >= microinstrucoes.length) {
+            throw new IndexOutOfBoundsException("Endereço da memória de controle inválido: " + endereco);
+        }
+        this.microinstrucoes[endereco] = microinstrucao;
+    }
+
+    public int getTamanho() {
+        return microinstrucoes.length;
     }
 }

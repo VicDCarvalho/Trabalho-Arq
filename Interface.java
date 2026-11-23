@@ -314,9 +314,20 @@ public class Interface extends JFrame {
         abasMemoria.addTab("Caminho de Dados (Datapath Visual)", painelDatapath);
 
         JSplitPane splitVertical = new JSplitPane(JSplitPane.VERTICAL_SPLIT, metadeSuperior, abasMemoria);
-        splitVertical.setResizeWeight(0.56);
+        splitVertical.setResizeWeight(0.50);
         splitVertical.setDividerSize(6);
         splitVertical.setBackground(COR_FUNDO);
+
+        
+        abasMemoria.addChangeListener(e -> {
+        int abaSelecionada = abasMemoria.getSelectedIndex();
+        if (abaSelecionada == 2) { // Índice 2 = "Caminho de Dados (Datapath Visual)"
+            splitVertical.setDividerLocation(0.18); // Deixa 82% da tela para o esquema visual
+        }else {
+        splitVertical.setDividerLocation(0.52); // Volta ao tamanho normal para MP e Cache
+    }
+});
+
 
         painelPrincipal.add(splitVertical, BorderLayout.CENTER);
         add(painelPrincipal, BorderLayout.CENTER);

@@ -40,6 +40,8 @@ public class Interface extends JFrame {
     private JTable tabelaCache;
     private DefaultTableModel modeloCache;
 
+    private PainelDatapath painelDatapath;
+
     private JSpinner spinnerPausa;
     private Timer timerExecucao;
     private JButton btnIniciar;
@@ -308,6 +310,9 @@ public class Interface extends JFrame {
         tabelaCache = criarTabelaEstilizada(modeloCache);
         abasMemoria.addTab("Memória Cache (Mapeamento Direto)", new JScrollPane(tabelaCache));
 
+        painelDatapath = new PainelDatapath(processador);
+        abasMemoria.addTab("Caminho de Dados (Datapath Visual)", painelDatapath);
+
         JSplitPane splitVertical = new JSplitPane(JSplitPane.VERTICAL_SPLIT, metadeSuperior, abasMemoria);
         splitVertical.setResizeWeight(0.56);
         splitVertical.setDividerSize(6);
@@ -511,6 +516,8 @@ public class Interface extends JFrame {
         }
 
         tabelaMP.repaint();
+
+        if (painelDatapath != null) painelDatapath.repaint();
     }
 
     private String decodificarInstrucaoTexto(int palavra) {

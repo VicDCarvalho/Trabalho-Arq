@@ -350,8 +350,25 @@ public class Interface extends JFrame {
             case 0x5: return "JZER " + end12;
             case 0x6: return "JUMP " + end12;
             case 0x7: return "LOCO " + end12;
+            case 0x8: return "LODL " + end12;
+            case 0x9: return "STOL " + end12;
+            case 0xA: return "ADDL " + end12;
+            case 0xB: return "SUBL " + end12;
             case 0xC: return "JNEG " + end12;
-            default:  return "Dado / Estendida";
+            case 0xD: return "JNZE " + end12;
+            case 0xE: return "CALL " + end12;
+            default: // 0xF: instruções estendidas (bits 11..9 escolhem a instrução)
+                int y = val & 0x00FF;
+                switch ((val >>> 9) & 0x7) {
+                    case 0: return "PSHI";
+                    case 1: return "POPI";
+                    case 2: return "PUSH";
+                    case 3: return "POP";
+                    case 4: return "RETN";
+                    case 5: return "SWAP";
+                    case 6: return "INSP " + y;
+                    default: return "DESP " + y;
+                }
         }
     }
 

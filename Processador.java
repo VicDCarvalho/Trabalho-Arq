@@ -5,6 +5,14 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 public class Processador {
+    // ---- Índices dos registradores (iguais aos de BancoRegistradores) ----
+    private static final int PC = 0, AC = 1, SP = 2, IR = 3, TIR = 4;
+    private static final int ZERO = 5, UM = 6, MENOS_UM = 7, AMASK = 8, SMASK = 9;
+    private static final int RA = 10; // registrador auxiliar "A" (usado como temporário)
+
+    // Endereço do laço de HALT na memória de controle
+    private static final int ENDERECO_HALT = 31;
+
     private UnidadeControle uc;
     private MemoriaControle memControle;
     private Memoria memoriaPrincipal;
@@ -23,6 +31,9 @@ public class Processador {
     private Latch latchA;
     private Latch latchB;
 
+    // Microprograma em uso (firmware padrão ou customizado). Sobrevive a "gravar na MP" e "reset".
+    private int[] microprogramaAtual;
+
     private int ciclosLeituraPendentes;
     private int ciclosEscritaPendentes;
     private int ciclosExecutados;
@@ -30,7 +41,8 @@ public class Processador {
     private String descricaoMicroinstrucaoAtual;
 
     public Processador() {
-        inicializarComponentes(gerarFirmwarePadrao());
+        this.microprogramaAtual = gerarFirmwarePadrao();
+        inicializarComponentes(microprogramaAtual);
     }
 
     private void inicializarComponentes(int[] microprograma) {
@@ -61,136 +73,191 @@ public class Processador {
     }
 
     /**
-     * Gera o microprograma padrão (firmware) corrigido do MIC-1 para interpretar
-     * o conjunto de instruções MAC-1 gravado na Memória Principal.
+     * Firmware padrão do MIC-1: interpreta o conjunto de instruções MAC-1 completo.
+     *
+     * Convenções (iguais ao hardware simulado):
+     *  - AMUX = 1 -> entrada A da ULA vem do barramento A (registrador);  AMUX = 0 -> vem do MBR
+     *  - COND: 0 = segue sequencial (MPC+1), 1 = salta se N, 2 = salta se Z, 3 = salta sempre
+     *  - ALU : 0 = A+B, 1 = A AND B, 2 = A OR B, 3 = NOT A
+     *  - MAR sempre carrega do barramento B
+     *  - Leitura/escrita na memória levam 2 microinstruções seguidas com RD/WR = 1
+     *  - Os flags N/Z vêm do resultado da ULA da própria microinstrução
+     *
+     * Mapa de endereços:
+     *   0-2   busca (fetch)            3-5, 8, 15, 16, 18   decodificação 0x0..0x7
+     *   6-7, 9, 11, 20-26, 32-33, 40-43   LODD/STOD/ADDD/SUBD
+     *   17, 19, 27-29, 38-39, 44-46    JPOS/JUMP/JZER/LOCO e "PC := IR & AMASK"
+     *   31                             HALT
+     *   64-72, 110-113                 decodificação 0x8..0xB (LODL/STOL/ADDL/SUBL)
+     *   80-86                          0xC/0xD (JNEG/JNZE)
+     *   90-91, 120-122                 0xE (CALL)
+     *   92-108, 130-149                0xF (PSHI/POPI/PUSH/POP/RETN/SWAP/INSP/DESP/HALT)
      */
     private int[] gerarFirmwarePadrao() {
         int[] rom = new int[256];
 
-        // --- CICLO DE BUSCA (FETCH) ---
-        // 0: MAR := PC; RD
-        rom[0] = codificarMicro(1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1);
-        // 1: PC := PC + 1; RD (completa os 2 ciclos de leitura da Cache)
-        rom[1] = codificarMicro(1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 6, 0, 2);
-        // 2: IR := MBR; se bit 15 == 1 (negativo) salta para 30 (JNEG / HALT)
-        rom[2] = codificarMicro(0, 1, 0, 0, 0, 0, 0, 0, 1, 3, 5, 0, 30);
+        // Parâmetros de m(): amux, cond, alu, sh, mbr, mar, rd, wr, enc, c, b, a, addr
 
-        // --- DECODIFICAÇÃO (Opcodes 0x0 a 0x7) ---
-        // 3: TIR := IR + IR (desloca bit 14 para sinal -> testa se >= 4xxx)
-        rom[3] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 1, 4, 3, 3, 15);
-        // 4: TIR := TIR + TIR (bit 13 -> se N=1 é 2xxx ADDD ou 3xxx SUBD, vai para 8)
-        rom[4] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 1, 4, 4, 4, 8);
-        // 5: TIR := TIR + TIR (bit 12 -> se N=1 é 1xxx STOD [7], senão 0xxx LODD [6])
-        rom[5] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 1, 4, 4, 4, 7);
+        // ================= BUSCA (FETCH) =================
+        rom[0] = m(1,0,0,0,0,1,1,0,0, 0,  PC, 0,  1);          // MAR := PC; RD
+        rom[1] = m(1,0,0,0,0,0,1,0,1, PC, UM, PC, 2);          // PC := PC + 1; RD
+        rom[2] = m(0,1,0,0,0,0,0,0,1, IR, ZERO,0, 64);         // IR := MBR; se bit15=1 -> 64
 
-        // --- LODD (0xxx): AC := MP[IR & AMASK] ---
-        // 6: RegA(10) := IR AND AMASK (8)
-        rom[6]  = codificarMicro(1, 3, 1, 0, 0, 0, 0, 0, 1, 10, 8, 3, 20);
-        // 20: MAR := RegA(10); RD
-        rom[20] = codificarMicro(1, 3, 0, 0, 0, 1, 1, 0, 0, 0, 10, 0, 21);
-        // 21: RD (2º ciclo de leitura da Cache)
-        rom[21] = codificarMicro(1, 3, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 40);
-        // 40: AC := MBR; volta para 0
-        rom[40] = codificarMicro(0, 3, 0, 0, 0, 0, 0, 0, 1, 1, 5, 0, 0);
+        // ================= DECODIFICAÇÃO 0x0..0x7 =================
+        rom[3] = m(1,1,0,0,0,0,0,0,1, TIR,IR, IR, 15);         // TIR := IR+IR; bit14=1 -> 15 (4..7)
+        rom[4] = m(1,1,0,0,0,0,0,0,1, TIR,TIR,TIR, 8);         // bit13=1 -> 8 (2xxx/3xxx)
+        rom[5] = m(1,1,0,0,0,0,0,0,1, TIR,TIR,TIR, 7);         // bit12=1 -> 7 (STOD) senão 6 (LODD)
+        rom[8] = m(1,1,0,0,0,0,0,0,1, TIR,TIR,TIR, 11);        // bit12=1 -> 11 (SUBD) senão 9 (ADDD)
+        rom[15]= m(1,1,0,0,0,0,0,0,1, TIR,TIR,TIR, 18);        // bit13=1 -> 18 (6xxx/7xxx)
+        rom[16]= m(1,1,0,0,0,0,0,0,1, TIR,TIR,TIR, 27);        // bit12=1 -> 27 (JZER) senão 17 (JPOS)
+        rom[18]= m(1,1,0,0,0,0,0,0,1, TIR,TIR,TIR, 28);        // bit12=1 -> 28 (LOCO) senão 19 (JUMP)
 
-        // --- STOD (1xxx): MP[IR & AMASK] := AC ---
-        // 7: RegA(10) := IR AND AMASK (8)
-        rom[7]  = codificarMicro(1, 3, 1, 0, 0, 0, 0, 0, 1, 10, 8, 3, 22);
-        // 22: MAR := RegA(10); MBR := AC; WR
-        rom[22] = codificarMicro(1, 3, 0, 0, 1, 1, 0, 1, 0, 0, 10, 1, 41);
-        // 41: WR (2º ciclo de escrita na Cache); volta para 0
-        rom[41] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0);
+        // ================= LODD: AC := M[x] =================
+        rom[6]  = m(1,3,1,0,0,0,0,0,1, RA, AMASK, IR, 20);     // RA := IR AND AMASK
+        rom[20] = m(1,3,0,0,0,1,1,0,0, 0,  RA, 0, 21);         // MAR := RA; RD
+        rom[21] = m(1,3,0,0,0,0,1,0,0, 0,  0,  0, 40);         // RD
+        rom[40] = m(0,3,0,0,0,0,0,0,1, AC, ZERO,0, 0);         // AC := MBR
 
-        // --- 8: ADDD (2xxx) vs SUBD (3xxx) ---
-        // bit 12 -> se N=1 é 3xxx SUBD [11], senão 2xxx ADDD [9]
-        rom[8]  = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 1, 4, 4, 4, 11);
+        // ================= STOD: M[x] := AC =================
+        rom[7]  = m(1,3,1,0,0,0,0,0,1, RA, AMASK, IR, 22);     // RA := IR AND AMASK
+        rom[22] = m(1,3,0,0,0,1,0,0,0, 0,  RA, 0, 12);         // MAR := RA
+        rom[12] = m(1,3,0,0,1,0,0,1,0, 0,  ZERO, AC, 41);      // MBR := AC + 0; WR
+        rom[41] = m(1,3,0,0,0,0,0,1,0, 0,  0,  0, 0);          // WR (2º ciclo)
 
-        // --- ADDD (2xxx): AC := AC + MP[IR & AMASK] ---
-        // 9: RegA(10) := IR AND AMASK (8)
-        rom[9]  = codificarMicro(1, 3, 1, 0, 0, 0, 0, 0, 1, 10, 8, 3, 23);
-        // 23: MAR := RegA(10); RD
-        rom[23] = codificarMicro(1, 3, 0, 0, 0, 1, 1, 0, 0, 0, 10, 0, 24);
-        // 24: RD (2º ciclo)
-        rom[24] = codificarMicro(1, 3, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 42);
-        // 42: AC := MBR + AC; volta para 0
-        rom[42] = codificarMicro(0, 3, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0);
+        // ================= ADDD: AC := AC + M[x] =================
+        rom[9]  = m(1,3,1,0,0,0,0,0,1, RA, AMASK, IR, 23);
+        rom[23] = m(1,3,0,0,0,1,1,0,0, 0,  RA, 0, 24);         // MAR := RA; RD
+        rom[24] = m(1,3,0,0,0,0,1,0,0, 0,  0,  0, 42);         // RD
+        rom[42] = m(0,3,0,0,0,0,0,0,1, AC, AC, 0, 0);          // AC := MBR + AC
 
-        // --- SUBD (3xxx): AC := AC - MP[IR & AMASK] ---
-        // 11: RegA(10) := IR AND AMASK (8)
-        rom[11] = codificarMicro(1, 3, 1, 0, 0, 0, 0, 0, 1, 10, 8, 3, 25);
-        // 25: MAR := RegA(10); RD
-        rom[25] = codificarMicro(1, 3, 0, 0, 0, 1, 1, 0, 0, 0, 10, 0, 26);
-        // 26: RD (2º ciclo)
-        rom[26] = codificarMicro(1, 3, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 32);
-        // 32: CORRIGIDO (AMUX=1): RegA(10) := NOT MBR
-        rom[32] = codificarMicro(1, 3, 3, 0, 0, 0, 0, 0, 1, 10, 0, 0, 33);
-        // 33: RegA(10) := RegA(10) + 1 (complemento de 2)
-        rom[33] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 1, 10, 6, 10, 43);
-        // 43: AC := RegA(10) + AC; volta para 0
-        rom[43] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 1, 1, 1, 10, 0);
+        // ================= SUBD: AC := AC - M[x] =================
+        rom[11] = m(1,3,1,0,0,0,0,0,1, RA, AMASK, IR, 25);
+        rom[25] = m(1,3,0,0,0,1,1,0,0, 0,  RA, 0, 26);         // MAR := RA; RD
+        rom[26] = m(1,3,0,0,0,0,1,0,0, 0,  0,  0, 32);         // RD
+        rom[32] = m(0,3,3,0,0,0,0,0,1, RA, 0,  0, 33);         // RA := NOT MBR   (AMUX=0 -> MBR)
+        rom[33] = m(1,3,0,0,0,0,0,0,1, RA, UM, RA, 43);        // RA := RA + 1
+        rom[43] = m(1,3,0,0,0,0,0,0,1, AC, AC, RA, 0);         // AC := RA + AC
 
-        // --- SALTOS E CONSTANTE (4xxx a 7xxx) ---
-        // 15: TIR := TIR + TIR (bit 13 -> se N=1 é 6xxx JUMP ou 7xxx LOCO [18])
-        rom[15] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 1, 4, 4, 4, 18);
-        // 16: TIR := TIR + TIR (bit 12 -> se N=1 é 5xxx JZER [27], senão 4xxx JPOS [17])
-        rom[16] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 1, 4, 4, 4, 27);
+        // ================= JPOS / JZER / JUMP / LOCO =================
+        rom[17] = m(1,3,0,0,0,0,0,0,0, 0, 0, 0, 44);           // JPOS
+        rom[44] = m(1,1,0,0,0,0,0,0,0, 0, ZERO, AC, 46);       // testa AC (AMUX=1); N=1 -> 46
+        rom[45] = m(1,3,0,0,0,0,0,0,0, 0, 0, 0, 29);           // AC >= 0 -> PC := x
+        rom[46] = m(1,3,0,0,0,0,0,0,0, 0, 0, 0, 0);            // AC < 0  -> próxima instrução
 
-        // 17: JPOS (4xxx) - redirecionado para área isolada (44..46)
-        rom[17] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 44);
-        // 44: CORRIGIDO (AMUX=0): Testa AC; se N=1 (negativo) salta para 46 (não salta), senão avança para 45
-        rom[44] = codificarMicro(0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 5, 1, 46);
-        // 45: AC >= 0 -> vai para 29 (PC := IR & AMASK)
-        rom[45] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 29);
-        // 46: AC < 0 -> volta para 0
-        rom[46] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        rom[19] = m(1,3,0,0,0,0,0,0,0, 0, 0, 0, 29);           // JUMP -> PC := x
 
-        // 18: JUMP (6xxx) vs LOCO (7xxx)
-        rom[18] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 1, 4, 4, 4, 28); // bit 12 == 1 -> 28 (LOCO), senão 19
-        rom[19] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 29); // JUMP -> 29
+        rom[27] = m(1,3,0,0,0,0,0,0,0, 0, 0, 0, 38);           // JZER
+        rom[38] = m(1,2,0,0,0,0,0,0,0, 0, ZERO, AC, 29);       // testa AC; Z=1 -> 29
+        rom[39] = m(1,3,0,0,0,0,0,0,0, 0, 0, 0, 0);            // AC != 0 -> próxima instrução
 
-        // 27: JZER (5xxx) - redirecionado para área isolada (38..39)
-        rom[27] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 38);
-        // 38: CORRIGIDO (AMUX=0): Testa AC; se Z=1 salta para 29 (PC := IR & AMASK), senão avança para 39
-        rom[38] = codificarMicro(0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 5, 1, 29);
-        // 39: AC != 0 -> volta para 0
-        rom[39] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        rom[28] = m(1,3,1,0,0,0,0,0,1, AC, AMASK, IR, 0);      // LOCO: AC := IR AND AMASK
+        rom[29] = m(1,3,1,0,0,0,0,0,1, PC, AMASK, IR, 0);      // PC := IR AND AMASK
 
-        // 28: LOCO (7xxx): AC := IR AND AMASK; volta para 0
-        rom[28] = codificarMicro(1, 3, 1, 0, 0, 0, 0, 0, 1, 1, 8, 3, 0);
-        // 29: JUMP (6xxx): PC := IR AND AMASK; volta para 0
-        rom[29] = codificarMicro(1, 3, 1, 0, 0, 0, 0, 0, 1, 0, 8, 3, 0);
+        // ================= DECODIFICAÇÃO 0x8..0xF (bit15 = 1) =================
+        rom[64] = m(1,1,0,0,0,0,0,0,1, TIR,IR, IR, 80);        // TIR := IR+IR; bit14=1 -> 80 (C..F)
+        rom[65] = m(1,1,0,0,0,0,0,0,1, TIR,TIR,TIR, 70);       // bit13=1 -> 70 (ADDL/SUBL)
+        rom[66] = m(1,1,0,0,0,0,0,0,1, TIR,TIR,TIR, 68);       // bit12=1 -> 68 (STOL) senão 67 (LODL)
 
-        // --- OPCODES NEGATIVOS (JNEG 0xCxxx e HALT 0xFFFF) ---
-        // 30: RegA(10) := IR + 1 (se IR == 0xFFFF [HALT], resultado = 0 e Z=1)
-        rom[30] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 1, 10, 6, 3, 35);
-        // 35: Testa RegA(10); se Z=1 vai para 31 (HALT), senão avança para 47
-        rom[35] = codificarMicro(1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 5, 10, 47);
+        // ---- LODL: AC := M[SP + x]  (reusa o final do LODD) ----
+        rom[67]  = m(1,3,1,0,0,0,0,0,1, RA, AMASK, IR, 110);   // RA := IR AND AMASK
+        rom[110] = m(1,3,0,0,0,0,0,0,1, RA, SP, RA, 20);       // RA := RA + SP
+        // ---- STOL: M[SP + x] := AC  (reusa o final do STOD) ----
+        rom[68]  = m(1,3,1,0,0,0,0,0,1, RA, AMASK, IR, 111);
+        rom[111] = m(1,3,0,0,0,0,0,0,1, RA, SP, RA, 22);
+        // ---- 70: ADDL (bit12=0) / SUBL (bit12=1) ----
+        rom[70]  = m(1,1,0,0,0,0,0,0,1, TIR,TIR,TIR, 72);      // bit12=1 -> 72 (SUBL) senão 71 (ADDL)
+        rom[71]  = m(1,3,1,0,0,0,0,0,1, RA, AMASK, IR, 112);   // ADDL
+        rom[112] = m(1,3,0,0,0,0,0,0,1, RA, SP, RA, 23);       // -> final do ADDD
+        rom[72]  = m(1,3,1,0,0,0,0,0,1, RA, AMASK, IR, 113);   // SUBL
+        rom[113] = m(1,3,0,0,0,0,0,0,1, RA, SP, RA, 25);       // -> final do SUBD
 
-        // 47: Verifica se é JNEG (0xCxxx -> bit 14 = 1, bit 13 = 0, bit 12 = 0)
-        // TIR := IR + IR (desloca bit 14 para sinal -> se N=0, não é 0xCxxx -> HALT [31])
-        rom[47] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 1, 4, 3, 3, 48);
-        rom[48] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 31); // N=0 -> HALT
-        // 49: TIR := TIR + TIR (bit 13 -> se N=1 é 0xE/0xF -> HALT [31])
-        rom[49] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 1, 4, 4, 4, 31);
-        // 50: TIR := TIR + TIR (bit 12 -> se N=1 é 0xDxxx -> HALT [31], senão 0xCxxx -> JNEG [36])
-        rom[50] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 1, 4, 4, 4, 31);
+        // ---- 0xC..0xF ----
+        rom[80] = m(1,1,0,0,0,0,0,0,1, TIR,TIR,TIR, 90);       // bit13=1 -> 90 (E/F) senão 81 (C/D)
+        rom[81] = m(1,1,0,0,0,0,0,0,1, TIR,TIR,TIR, 85);       // bit12=1 -> 85 (JNZE) senão 82 (JNEG)
 
-        // Ajuste de salto do 48 para 49 quando N=1:
-        rom[47] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 1, 4, 3, 3, 49);
-        rom[48] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 31);
-        // Ajuste de salto do 50 para 36 quando N=0:
-        rom[50] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 1, 4, 4, 4, 31);
-        // (Quando N=0 em 50, avança sequencialmente para 51 -> 36)
-        rom[51] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 36);
+        // JNEG (0xC): se AC < 0, PC := x
+        rom[82] = m(1,1,0,0,0,0,0,0,0, 0, ZERO, AC, 29);       // N=1 -> 29
+        rom[83] = m(1,3,0,0,0,0,0,0,0, 0, 0, 0, 0);            // senão -> próxima instrução
+        // JNZE (0xD): se AC != 0, PC := x
+        rom[85] = m(1,2,0,0,0,0,0,0,0, 0, ZERO, AC, 0);        // Z=1 -> 0 (não salta)
+        rom[86] = m(1,3,0,0,0,0,0,0,0, 0, 0, 0, 29);           // senão -> 29
 
-        // 36: CORRIGIDO (AMUX=0): JNEG (0xCxxx): testa AC; se N=1 vai para 29 (salta), senão avança para 37 -> 0
-        rom[36] = codificarMicro(0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 5, 1, 29);
-        rom[37] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        rom[90] = m(1,1,0,0,0,0,0,0,1, TIR,TIR,TIR, 92);       // bit12=1 -> 92 (0xF) senão 91 (CALL)
 
-        // 31: Loop de HALT (Fim do programa)
-        rom[31] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 31);
+        // CALL (0xE): SP := SP-1; M[SP] := PC; PC := x
+        rom[91]  = m(1,3,0,0,0,0,0,0,1, SP, MENOS_UM, SP, 120);// SP := SP + (-1)
+        rom[120] = m(1,3,0,0,0,1,0,0,0, 0, SP, 0, 121);        // MAR := SP
+        rom[121] = m(1,3,0,0,1,0,0,1,0, 0, ZERO, PC, 122);     // MBR := PC; WR
+        rom[122] = m(1,3,1,0,0,0,0,1,1, PC, AMASK, IR, 0);     // WR; PC := IR AND AMASK
+
+        // ---- 0xF: instruções estendidas; decodifica bits 11,10,9 ----
+        rom[92]  = m(1,1,0,0,0,0,0,0,1, TIR,TIR,TIR, 100);     // bit11=1 -> 100 (RETN/SWAP/INSP/DESP)
+        rom[93]  = m(1,1,0,0,0,0,0,0,1, TIR,TIR,TIR, 97);      // bit10=1 -> 97 (PUSH/POP)
+        rom[94]  = m(1,1,0,0,0,0,0,0,1, TIR,TIR,TIR, 96);      // bit9=1  -> 96 (POPI) senão 95 (PSHI)
+        rom[97]  = m(1,1,0,0,0,0,0,0,1, TIR,TIR,TIR, 99);      // bit9=1  -> 99 (POP)  senão 98 (PUSH)
+        rom[100] = m(1,1,0,0,0,0,0,0,1, TIR,TIR,TIR, 105);     // bit10=1 -> 105 (INSP/DESP)
+        rom[101] = m(1,1,0,0,0,0,0,0,1, TIR,TIR,TIR, 103);     // bit9=1  -> 103 (SWAP) senão 102 (RETN)
+        rom[105] = m(1,1,0,0,0,0,0,0,1, TIR,TIR,TIR, 107);     // bit9=1  -> 107 (DESP) senão 106 (INSP)
+
+        // PSHI: SP := SP-1; M[SP] := M[AC]
+        rom[95]  = m(1,3,0,0,0,0,0,0,1, SP, MENOS_UM, SP, 130);
+        rom[130] = m(1,3,0,0,0,1,1,0,0, 0, AC, 0, 131);        // MAR := AC; RD
+        rom[131] = m(1,3,0,0,0,0,1,0,0, 0, 0, 0, 132);         // RD  (MBR := M[AC])
+        rom[132] = m(1,3,0,0,0,1,0,1,0, 0, SP, 0, 133);        // MAR := SP; WR
+        rom[133] = m(1,3,0,0,0,0,0,1,0, 0, 0, 0, 0);           // WR
+
+        // POPI: M[AC] := M[SP]; SP := SP+1
+        rom[96]  = m(1,3,0,0,0,1,1,0,0, 0, SP, 0, 134);        // MAR := SP; RD
+        rom[134] = m(1,3,0,0,0,0,1,0,0, 0, 0, 0, 135);         // RD  (MBR := M[SP])
+        rom[135] = m(1,3,0,0,0,1,0,1,0, 0, AC, 0, 136);        // MAR := AC; WR
+        rom[136] = m(1,3,0,0,0,0,0,1,1, SP, UM, SP, 0);        // WR; SP := SP + 1
+
+        // PUSH: SP := SP-1; M[SP] := AC
+        rom[98]  = m(1,3,0,0,0,0,0,0,1, SP, MENOS_UM, SP, 137);
+        rom[137] = m(1,3,0,0,0,1,0,0,0, 0, SP, 0, 138);        // MAR := SP
+        rom[138] = m(1,3,0,0,1,0,0,1,0, 0, ZERO, AC, 139);     // MBR := AC; WR
+        rom[139] = m(1,3,0,0,0,0,0,1,0, 0, 0, 0, 0);           // WR
+
+        // POP: AC := M[SP]; SP := SP+1
+        rom[99]  = m(1,3,0,0,0,1,1,0,0, 0, SP, 0, 140);        // MAR := SP; RD
+        rom[140] = m(1,3,0,0,0,0,1,0,1, SP, UM, SP, 141);      // RD; SP := SP + 1
+        rom[141] = m(0,3,0,0,0,0,0,0,1, AC, ZERO, 0, 0);       // AC := MBR
+
+        // RETN: PC := M[SP]; SP := SP+1
+        rom[102] = m(1,3,0,0,0,1,1,0,0, 0, SP, 0, 142);       // MAR := SP; RD
+        rom[142] = m(1,3,0,0,0,0,1,0,1, SP, UM, SP, 143);     // RD; SP := SP + 1
+        rom[143] = m(0,3,0,0,0,0,0,0,1, PC, ZERO, 0, 0);      // PC := MBR
+
+        // SWAP: AC <-> SP
+        rom[103] = m(1,3,0,0,0,0,0,0,1, RA, ZERO, AC, 144);   // RA := AC
+        rom[144] = m(1,3,0,0,0,0,0,0,1, AC, ZERO, SP, 145);   // AC := SP
+        rom[145] = m(1,3,0,0,0,0,0,0,1, SP, ZERO, RA, 0);     // SP := RA
+
+        // INSP y: SP := SP + y
+        rom[106] = m(1,3,1,0,0,0,0,0,1, RA, SMASK, IR, 146);  // RA := IR AND SMASK
+        rom[146] = m(1,3,0,0,0,0,0,0,1, SP, SP, RA, 0);       // SP := RA + SP
+
+        // DESP y: SP := SP - y   (0xFFFF = HALT: é detectado aqui, pois 0xFFFF + 1 = 0)
+        rom[107] = m(1,2,0,0,0,0,0,0,1, RA, UM, IR, ENDERECO_HALT); // RA := IR+1; Z=1 -> HALT
+        rom[108] = m(1,3,1,0,0,0,0,0,1, RA, SMASK, IR, 147);  // RA := IR AND SMASK
+        rom[147] = m(1,3,3,0,0,0,0,0,1, RA, 0, RA, 148);      // RA := NOT RA
+        rom[148] = m(1,3,0,0,0,0,0,0,1, RA, UM, RA, 149);     // RA := RA + 1
+        rom[149] = m(1,3,0,0,0,0,0,0,1, SP, SP, RA, 0);       // SP := RA + SP
+
+        // ================= HALT =================
+        rom[ENDERECO_HALT] = microHalt();
 
         return rom;
+    }
+
+    private int microHalt() {
+        return m(1,3,0,0,0,0,0,0,0, 0, 0, 0, ENDERECO_HALT);
+    }
+
+    // Atalho curto para montar microinstruções nas tabelas acima
+    private int m(int amux, int cond, int alu, int sh, int mbr, int mar,
+                  int rd, int wr, int enc, int c, int b, int a, int addr) {
+        return codificarMicro(amux, cond, alu, sh, mbr, mar, rd, wr, enc, c, b, a, addr);
     }
 
     private int codificarMicro(int amux, int cond, int alu, int sh, int mbr, int mar,
@@ -212,8 +279,9 @@ public class Processador {
         return m;
     }
 
+    /** Grava o programa (macroinstruções) na MP e reinicia o processador, mantendo o microprograma atual. */
     public void carregarProgramaNaMP(int[] palavrasPrograma) {
-        inicializarComponentes(gerarFirmwarePadrao());
+        inicializarComponentes(microprogramaAtual);
         for (int i = 0; i < Math.min(palavrasPrograma.length, memoriaPrincipal.getTamanho()); i++) {
             memoriaPrincipal.escrita(palavrasPrograma[i] & 0xFFFF, i);
         }
@@ -221,57 +289,74 @@ public class Processador {
 
     public void carregarMicroprograma(String codigoMicroinstrucoes) throws IOException {
         Path tempFile = Files.createTempFile("microprograma_", ".txt");
-        Files.writeString(tempFile, codigoMicroinstrucoes);
-        this.montador = new Montador();
-        int[] microprogramaMontado = montador.montar(tempFile.toString());
-        Files.deleteIfExists(tempFile);
-        inicializarComponentes(microprogramaMontado);
+        try {
+            Files.writeString(tempFile, codigoMicroinstrucoes);
+            this.montador = new Montador();
+            this.microprogramaAtual = montador.montar(tempFile.toString());
+        } finally {
+            Files.deleteIfExists(tempFile);
+        }
+        inicializarComponentes(microprogramaAtual);
+    }
+
+    /** Volta ao firmware padrão (descarta um microprograma customizado). */
+    public void restaurarFirmwarePadrao() {
+        this.microprogramaAtual = gerarFirmwarePadrao();
+        inicializarComponentes(microprogramaAtual);
     }
 
     public String executarCiclo() {
         if (finalizado) return "Execução finalizada (HALT).\n";
 
         int mpcAtual = mpc.getValor();
-        if (mpcAtual == 31 && memControle.leitura(31) == codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 31)) {
+        if (mpcAtual == ENDERECO_HALT && memControle.leitura(ENDERECO_HALT) == microHalt()) {
             finalizado = true;
             descricaoMicroinstrucaoAtual = "HALT (Programa finalizado)";
             return "HALT alcançado. Execução concluída.\n";
         }
 
-        // SUBCICLO 1: Busca microinstrução
-        uc.buscarMicroinstrucao();
-        int microinstrucao = memControle.leitura(mpcAtual);
+        try {
+            // SUBCICLO 1: Busca microinstrução
+            uc.buscarMicroinstrucao();
+            int microinstrucao = memControle.leitura(mpcAtual);
 
-        // SUBCICLO 2: Leitura dos registradores A e B
-        int valorA = bancoRegs.ler(mir.getA());
-        int valorB = bancoRegs.ler(mir.getB());
-        latchA.habilitaEntrada(valorA);
-        latchB.habilitaEntrada(valorB);
+            // SUBCICLO 2: Leitura dos registradores A e B
+            int valorA = bancoRegs.ler(mir.getA());
+            int valorB = bancoRegs.ler(mir.getB());
+            latchA.habilitaEntrada(valorA);
+            latchB.habilitaEntrada(valorB);
 
-        // SUBCICLO 3: AMux -> ULA -> Deslocador -> MAR
-        int entradaAUla = amux.saida(latchA.habilitaSaida(), mbr.getValor(), mir.getAMUX());
-        int entradaBUla = latchB.habilitaSaida();
-        int resultadoUla = ula.computar(entradaAUla, entradaBUla, mir.getALU());
-        int saidaDeslocador = deslocador.computar(resultadoUla, mir.getSH());
+            // SUBCICLO 3: AMux -> ULA -> Deslocador -> MAR
+            int entradaAUla = amux.saida(latchA.habilitaSaida(), mbr.getValor(), mir.getAMUX());
+            int entradaBUla = latchB.habilitaSaida();
+            int resultadoUla = ula.computar(entradaAUla, entradaBUla, mir.getALU());
+            int saidaDeslocador = deslocador.computar(resultadoUla, mir.getSH());
 
-        if (mir.getMAR() == 1) {
-            mar.carregar(entradaBUla);
+            if (mir.getMAR() == 1) {
+                mar.carregar(entradaBUla);
+            }
+
+            // SUBCICLO 4: Escrita no C, MBR, Cache/MP e MPC
+            if (mir.getENC() == 1) {
+                bancoRegs.escrever(mir.getC(), saidaDeslocador, 1);
+            }
+            if (mir.getMBR() == 1) {
+                mbr.carregar(saidaDeslocador);
+            }
+
+            processarMemoria(mir.getRD(), mir.getWR());
+            uc.atualizarMPC(ula.getFlagN(), ula.getFlagZ(), mux);
+
+            ciclosExecutados++;
+            descricaoMicroinstrucaoAtual = formatarDescricaoMicro(mpcAtual, microinstrucao);
+            return descricaoMicroinstrucaoAtual + "\n";
+        } catch (RuntimeException e) {
+            // Ex.: acesso a endereço fora da MP (SP não inicializado, endereço > 255...)
+            finalizado = true;
+            descricaoMicroinstrucaoAtual = "ERRO no MPC=0x" + Integer.toHexString(mpcAtual).toUpperCase()
+                    + ": " + e.getMessage();
+            return descricaoMicroinstrucaoAtual + "\n";
         }
-
-        // SUBCICLO 4: Escrita no C, MBR, Cache/MP e MPC
-        if (mir.getENC() == 1) {
-            bancoRegs.escrever(mir.getC(), saidaDeslocador, 1);
-        }
-        if (mir.getMBR() == 1) {
-            mbr.carregar(saidaDeslocador);
-        }
-
-        processarMemoria(mir.getRD(), mir.getWR());
-        uc.atualizarMPC(ula.getFlagN(), ula.getFlagZ(), mux);
-
-        ciclosExecutados++;
-        descricaoMicroinstrucaoAtual = formatarDescricaoMicro(mpcAtual, microinstrucao);
-        return descricaoMicroinstrucaoAtual + "\n";
     }
 
     private String formatarDescricaoMicro(int mpcOrigem, int micro) {
@@ -309,8 +394,9 @@ public class Processador {
         }
     }
 
+    /** Zera registradores, memória e cache. Mantém o microprograma atual. */
     public void resetar() {
-        inicializarComponentes(gerarFirmwarePadrao());
+        inicializarComponentes(microprogramaAtual);
     }
 
     public Map<String, Integer> getMapaRegistradores() {

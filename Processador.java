@@ -122,8 +122,8 @@ public class Processador {
         rom[25] = codificarMicro(1, 3, 0, 0, 0, 1, 1, 0, 0, 0, 10, 0, 26);
         // 26: RD (2º ciclo)
         rom[26] = codificarMicro(1, 3, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 32);
-        // 32: RegA(10) := NOT MBR
-        rom[32] = codificarMicro(0, 3, 3, 0, 0, 0, 0, 0, 1, 10, 0, 0, 33);
+        // 32: CORRIGIDO (AMUX=1): RegA(10) := NOT MBR
+        rom[32] = codificarMicro(1, 3, 3, 0, 0, 0, 0, 0, 1, 10, 0, 0, 33);
         // 33: RegA(10) := RegA(10) + 1 (complemento de 2)
         rom[33] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 1, 10, 6, 10, 43);
         // 43: AC := RegA(10) + AC; volta para 0
@@ -137,8 +137,8 @@ public class Processador {
 
         // 17: JPOS (4xxx) - redirecionado para área isolada (44..46)
         rom[17] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 44);
-        // 44: Testa AC; se N=1 (negativo) salta para 46 (não salta), senão avança para 45
-        rom[44] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 5, 1, 46);
+        // 44: CORRIGIDO (AMUX=0): Testa AC; se N=1 (negativo) salta para 46 (não salta), senão avança para 45
+        rom[44] = codificarMicro(0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 5, 1, 46);
         // 45: AC >= 0 -> vai para 29 (PC := IR & AMASK)
         rom[45] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 29);
         // 46: AC < 0 -> volta para 0
@@ -150,8 +150,8 @@ public class Processador {
 
         // 27: JZER (5xxx) - redirecionado para área isolada (38..39)
         rom[27] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 38);
-        // 38: Testa AC; se Z=1 salta para 29 (PC := IR & AMASK), senão avança para 39
-        rom[38] = codificarMicro(1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 5, 1, 29);
+        // 38: CORRIGIDO (AMUX=0): Testa AC; se Z=1 salta para 29 (PC := IR & AMASK), senão avança para 39
+        rom[38] = codificarMicro(0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 5, 1, 29);
         // 39: AC != 0 -> volta para 0
         rom[39] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 
@@ -163,10 +163,28 @@ public class Processador {
         // --- OPCODES NEGATIVOS (JNEG 0xCxxx e HALT 0xFFFF) ---
         // 30: RegA(10) := IR + 1 (se IR == 0xFFFF [HALT], resultado = 0 e Z=1)
         rom[30] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 1, 10, 6, 3, 35);
-        // 35: Testa RegA(10); se Z=1 vai para 31 (HALT), senão avança para 36 (JNEG)
-        rom[35] = codificarMicro(1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 5, 10, 31);
-        // 36: JNEG (0xCxxx): testa AC; se N=1 vai para 29 (salta), senão avança para 37 -> 0
-        rom[36] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 5, 1, 29);
+        // 35: Testa RegA(10); se Z=1 vai para 31 (HALT), senão avança para 47
+        rom[35] = codificarMicro(1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 5, 10, 47);
+
+        // 47: Verifica se é JNEG (0xCxxx -> bit 14 = 1, bit 13 = 0, bit 12 = 0)
+        // TIR := IR + IR (desloca bit 14 para sinal -> se N=0, não é 0xCxxx -> HALT [31])
+        rom[47] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 1, 4, 3, 3, 48);
+        rom[48] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 31); // N=0 -> HALT
+        // 49: TIR := TIR + TIR (bit 13 -> se N=1 é 0xE/0xF -> HALT [31])
+        rom[49] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 1, 4, 4, 4, 31);
+        // 50: TIR := TIR + TIR (bit 12 -> se N=1 é 0xDxxx -> HALT [31], senão 0xCxxx -> JNEG [36])
+        rom[50] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 1, 4, 4, 4, 31);
+
+        // Ajuste de salto do 48 para 49 quando N=1:
+        rom[47] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 1, 4, 3, 3, 49);
+        rom[48] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 31);
+        // Ajuste de salto do 50 para 36 quando N=0:
+        rom[50] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 1, 4, 4, 4, 31);
+        // (Quando N=0 em 50, avança sequencialmente para 51 -> 36)
+        rom[51] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 36);
+
+        // 36: CORRIGIDO (AMUX=0): JNEG (0xCxxx): testa AC; se N=1 vai para 29 (salta), senão avança para 37 -> 0
+        rom[36] = codificarMicro(0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 5, 1, 29);
         rom[37] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 
         // 31: Loop de HALT (Fim do programa)
@@ -319,4 +337,3 @@ public class Processador {
     public MAR getMar() { return mar; }
     public MBR getMbr() { return mbr; }
 }
-```[cite: 17]

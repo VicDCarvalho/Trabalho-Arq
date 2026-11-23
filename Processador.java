@@ -61,95 +61,116 @@ public class Processador {
     }
 
     /**
-     * Gera o microprograma padrão (firmware) do MIC-1 para interpretar
+     * Gera o microprograma padrão (firmware) corrigido do MIC-1 para interpretar
      * o conjunto de instruções MAC-1 gravado na Memória Principal.
      */
     private int[] gerarFirmwarePadrao() {
         int[] rom = new int[256];
-        // 0: MAR := PC; RD (Busca instrução)
+
+        // --- CICLO DE BUSCA (FETCH) ---
+        // 0: MAR := PC; RD
         rom[0] = codificarMicro(1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1);
-        // 1: PC := PC + 1; RD
+        // 1: PC := PC + 1; RD (completa os 2 ciclos de leitura da Cache)
         rom[1] = codificarMicro(1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 6, 0, 2);
-        // 2: IR := MBR; se IR < 0 vai para instruções 0x8000..0xFFFF (endereço 30)
+        // 2: IR := MBR; se bit 15 == 1 (negativo) salta para 30 (JNEG / HALT)
         rom[2] = codificarMicro(0, 1, 0, 0, 0, 0, 0, 0, 1, 3, 5, 0, 30);
 
-        // --- Decodificação de Opcodes Positivos (0xxx a 7xxx) via deslocamento ---
-        // 3: TIR := IR + IR (desloca bit 14 para sinal)
+        // --- DECODIFICAÇÃO (Opcodes 0x0 a 0x7) ---
+        // 3: TIR := IR + IR (desloca bit 14 para sinal -> testa se >= 4xxx)
         rom[3] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 1, 4, 3, 3, 15);
-        // 4: TIR := TIR + TIR (bit 13) -> se N=1 é 0010 (ADDD=8) ou 0011 (SUBD=11)
+        // 4: TIR := TIR + TIR (bit 13 -> se N=1 é 2xxx ADDD ou 3xxx SUBD, vai para 8)
         rom[4] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 1, 4, 4, 4, 8);
-        // 5: TIR := TIR + TIR (bit 12) -> se N=1 é 0001 (STOD=7), senão 0000 (LODD=6)
+        // 5: TIR := TIR + TIR (bit 12 -> se N=1 é 1xxx STOD [7], senão 0xxx LODD [6])
         rom[5] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 1, 4, 4, 4, 7);
 
-        // 6: LODD (0xxx): MAR := IR; RD
-        rom[6] = codificarMicro(1, 3, 0, 0, 0, 1, 1, 0, 0, 0, 3, 0, 20);
-        // 7: STOD (1xxx): MAR := IR; MBR := AC; WR
-        rom[7] = codificarMicro(1, 3, 0, 0, 1, 1, 0, 1, 0, 0, 3, 1, 22);
+        // --- LODD (0xxx): AC := MP[IR & AMASK] ---
+        // 6: RegA(10) := IR AND AMASK (8)
+        rom[6]  = codificarMicro(1, 3, 1, 0, 0, 0, 0, 0, 1, 10, 8, 3, 20);
+        // 20: MAR := RegA(10); RD
+        rom[20] = codificarMicro(1, 3, 0, 0, 0, 1, 1, 0, 0, 0, 10, 0, 21);
+        // 21: RD (2º ciclo de leitura da Cache)
+        rom[21] = codificarMicro(1, 3, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 40);
+        // 40: AC := MBR; volta para 0
+        rom[40] = codificarMicro(0, 3, 0, 0, 0, 0, 0, 0, 1, 1, 5, 0, 0);
 
-        // 8: Verifica ADDD (2xxx) vs SUBD (3xxx)
-        rom[8] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 1, 4, 4, 4, 11);
-        // 9: ADDD (2xxx): MAR := IR; RD
-        rom[9] = codificarMicro(1, 3, 0, 0, 0, 1, 1, 0, 0, 0, 3, 0, 23);
-        // 11: SUBD (3xxx): MAR := IR; RD
-        rom[11] = codificarMicro(1, 3, 0, 0, 0, 1, 1, 0, 0, 0, 3, 0, 25);
+        // --- STOD (1xxx): MP[IR & AMASK] := AC ---
+        // 7: RegA(10) := IR AND AMASK (8)
+        rom[7]  = codificarMicro(1, 3, 1, 0, 0, 0, 0, 0, 1, 10, 8, 3, 22);
+        // 22: MAR := RegA(10); MBR := AC; WR
+        rom[22] = codificarMicro(1, 3, 0, 0, 1, 1, 0, 1, 0, 0, 10, 1, 41);
+        // 41: WR (2º ciclo de escrita na Cache); volta para 0
+        rom[41] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0);
 
-        // 15: Verifica JPOS/JZER (4xxx/5xxx) vs JUMP/LOCO (6xxx/7xxx)
+        // --- 8: ADDD (2xxx) vs SUBD (3xxx) ---
+        // bit 12 -> se N=1 é 3xxx SUBD [11], senão 2xxx ADDD [9]
+        rom[8]  = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 1, 4, 4, 4, 11);
+
+        // --- ADDD (2xxx): AC := AC + MP[IR & AMASK] ---
+        // 9: RegA(10) := IR AND AMASK (8)
+        rom[9]  = codificarMicro(1, 3, 1, 0, 0, 0, 0, 0, 1, 10, 8, 3, 23);
+        // 23: MAR := RegA(10); RD
+        rom[23] = codificarMicro(1, 3, 0, 0, 0, 1, 1, 0, 0, 0, 10, 0, 24);
+        // 24: RD (2º ciclo)
+        rom[24] = codificarMicro(1, 3, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 42);
+        // 42: AC := MBR + AC; volta para 0
+        rom[42] = codificarMicro(0, 3, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0);
+
+        // --- SUBD (3xxx): AC := AC - MP[IR & AMASK] ---
+        // 11: RegA(10) := IR AND AMASK (8)
+        rom[11] = codificarMicro(1, 3, 1, 0, 0, 0, 0, 0, 1, 10, 8, 3, 25);
+        // 25: MAR := RegA(10); RD
+        rom[25] = codificarMicro(1, 3, 0, 0, 0, 1, 1, 0, 0, 0, 10, 0, 26);
+        // 26: RD (2º ciclo)
+        rom[26] = codificarMicro(1, 3, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 32);
+        // 32: RegA(10) := NOT MBR
+        rom[32] = codificarMicro(0, 3, 3, 0, 0, 0, 0, 0, 1, 10, 0, 0, 33);
+        // 33: RegA(10) := RegA(10) + 1 (complemento de 2)
+        rom[33] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 1, 10, 6, 10, 43);
+        // 43: AC := RegA(10) + AC; volta para 0
+        rom[43] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 1, 1, 1, 10, 0);
+
+        // --- SALTOS E CONSTANTE (4xxx a 7xxx) ---
+        // 15: TIR := TIR + TIR (bit 13 -> se N=1 é 6xxx JUMP ou 7xxx LOCO [18])
         rom[15] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 1, 4, 4, 4, 18);
-        // 16: JPOS/JZER -> verifica bit 12
+        // 16: TIR := TIR + TIR (bit 12 -> se N=1 é 5xxx JZER [27], senão 4xxx JPOS [17])
         rom[16] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 1, 4, 4, 4, 27);
-        // 17: JPOS: testa AC (A := AC), se N=1 não salta, senão PC := IR
-        rom[17] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 5, 1, 0);
-        rom[17] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 1, 0, 3, 5, 0); // PC := IR & AMASK (simplificado: IR)
+
+        // 17: JPOS (4xxx) - redirecionado para área isolada (44..46)
+        rom[17] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 44);
+        // 44: Testa AC; se N=1 (negativo) salta para 46 (não salta), senão avança para 45
+        rom[44] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 5, 1, 46);
+        // 45: AC >= 0 -> vai para 29 (PC := IR & AMASK)
+        rom[45] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 29);
+        // 46: AC < 0 -> volta para 0
+        rom[46] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 
         // 18: JUMP (6xxx) vs LOCO (7xxx)
-        rom[18] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 1, 4, 4, 4, 19);
-        // 18 (false -> JUMP 6xxx): PC := IR AND AMASK
-        rom[18] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 1, 4, 4, 4, 28);
-        // JUMP (29): PC := IR AND AMASK; volta para 0
-        rom[29] = codificarMicro(1, 3, 1, 0, 0, 0, 0, 0, 1, 0, 8, 3, 0);
-        // LOCO (28): AC := IR AND AMASK; volta para 0
+        rom[18] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 1, 4, 4, 4, 28); // bit 12 == 1 -> 28 (LOCO), senão 19
+        rom[19] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 29); // JUMP -> 29
+
+        // 27: JZER (5xxx) - redirecionado para área isolada (38..39)
+        rom[27] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 38);
+        // 38: Testa AC; se Z=1 salta para 29 (PC := IR & AMASK), senão avança para 39
+        rom[38] = codificarMicro(1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 5, 1, 29);
+        // 39: AC != 0 -> volta para 0
+        rom[39] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+
+        // 28: LOCO (7xxx): AC := IR AND AMASK; volta para 0
         rom[28] = codificarMicro(1, 3, 1, 0, 0, 0, 0, 0, 1, 1, 8, 3, 0);
+        // 29: JUMP (6xxx): PC := IR AND AMASK; volta para 0
+        rom[29] = codificarMicro(1, 3, 1, 0, 0, 0, 0, 0, 1, 0, 8, 3, 0);
 
-        // 20-21: Finaliza LODD -> RD; AC := MBR
-        rom[20] = codificarMicro(1, 3, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 21);
-        rom[21] = codificarMicro(0, 3, 0, 0, 0, 0, 0, 0, 1, 1, 5, 0, 0);
-
-        // 22: Finaliza STOD -> WR; volta para 0
-        rom[22] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0);
-
-        // 23-24: Finaliza ADDD -> RD; AC := MBR + AC
-        rom[23] = codificarMicro(1, 3, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 24);
-        rom[24] = codificarMicro(0, 3, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0);
-
-        // 25-26: Finaliza SUBD -> RD; A := NOT MBR, depois AC := AC + A + 1
-        rom[25] = codificarMicro(1, 3, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 26);
-        rom[26] = codificarMicro(0, 3, 3, 0, 0, 0, 0, 0, 1, 10, 0, 0, 32);
-        rom[32] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 1, 10, 6, 10, 33);
-        rom[33] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 1, 1, 1, 10, 0);
-
-        // 27: JZER (5xxx): testa AC, se Z=1 salta para 29 (PC := IR)
-        rom[27] = codificarMicro(1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 5, 1, 29);
-        // Se não saltou, volta para 0
-        rom[27] = codificarMicro(1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 5, 1, 29);
-
-        // 30: Opcodes negativos (JNEG 0xCxxx ou HALT 0xFFFF)
-        // Se IR == -1 (0xFFFF = HALT), trava em 31; senão verifica JNEG (0xCxxx)
-        rom[30] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 1, 10, 7, 3, 34); // A := IR + (-1) -> se IR=0xFFFF, A=0xFFFE
-        rom[34] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 1, 10, 6, 3, 35); // A := IR + 1 -> se IR=0xFFFF, A=0 (Z=1!)
-        rom[35] = codificarMicro(1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 5, 10, 31); // Se Z=1 (HALT), vai para 31
-        // 36: JNEG (0xCxxx): testa AC, se N=1 vai para 29 (PC := IR), senão volta para 0
+        // --- OPCODES NEGATIVOS (JNEG 0xCxxx e HALT 0xFFFF) ---
+        // 30: RegA(10) := IR + 1 (se IR == 0xFFFF [HALT], resultado = 0 e Z=1)
+        rom[30] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 1, 10, 6, 3, 35);
+        // 35: Testa RegA(10); se Z=1 vai para 31 (HALT), senão avança para 36 (JNEG)
+        rom[35] = codificarMicro(1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 5, 10, 31);
+        // 36: JNEG (0xCxxx): testa AC; se N=1 vai para 29 (salta), senão avança para 37 -> 0
         rom[36] = codificarMicro(1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 5, 1, 29);
         rom[37] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 
         // 31: Loop de HALT (Fim do programa)
         rom[31] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 31);
-
-        // Ajuste de salto sequencial pós-JZER (27 -> 37 -> 0) e pós-35 (35 -> 36 -> 37 -> 0)
-        // Nota: no MIC-1 real COND=2 salta se Z=1 e avança para MPC+1 se Z=0:
-        // Como 27+1=28 (LOCO), redirecionamos 27 para 38:
-        rom[27] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 38);
-        rom[38] = codificarMicro(1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 5, 1, 29);
-        rom[39] = codificarMicro(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 
         return rom;
     }
@@ -262,6 +283,7 @@ public class Processador {
             ciclosEscritaPendentes++;
             if (ciclosEscritaPendentes >= 2) {
                 cache.escrita(mbr.getValor(), mar.getEndereco());
+                cache.flush(); // Sincroniza com a MP para exibição em tempo real na interface
                 ciclosEscritaPendentes = 0;
             }
         } else {
@@ -297,3 +319,4 @@ public class Processador {
     public MAR getMar() { return mar; }
     public MBR getMbr() { return mbr; }
 }
+```[cite: 17]

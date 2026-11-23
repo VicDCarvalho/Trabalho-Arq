@@ -313,6 +313,53 @@ public class Interface extends JFrame {
         painelDatapath = new PainelDatapath(processador);
         abasMemoria.addTab("Caminho de Dados (Datapath Visual)", painelDatapath);
 
+        // Aba 4: Tabela ISA (Conjunto de Instruções MAC-1)
+        DefaultTableModel modeloISA = new DefaultTableModel(
+            new Object[]{"Mnemônico", "Opcode (Bin / Hex)", "Formato (16-bit)", "Operação", "Descrição"}, 0
+        ) {
+            @Override public boolean isCellEditable(int r, int c) { return false; }
+    };
+
+Object[][] dadosISA = {
+    {"LODD x", "0000 (0x0)", "0000 xxxx xxxx xxxx", "AC := Mem[x]", "Carrega no AC o valor do endereço x"},
+    {"STOD x", "0001 (0x1)", "0001 xxxx xxxx xxxx", "Mem[x] := AC", "Armazena o valor do AC no endereço x"},
+    {"ADDD x", "0010 (0x2)", "0010 xxxx xxxx xxxx", "AC := AC + Mem[x]", "Soma o valor do endereço x ao AC"},
+    {"SUBD x", "0011 (0x3)", "0011 xxxx xxxx xxxx", "AC := AC - Mem[x]", "Subtrai o valor do endereço x do AC"},
+    {"JPOS x", "0100 (0x4)", "0100 xxxx xxxx xxxx", "Se AC >= 0: PC := x", "Salta para x se AC for positivo ou zero"},
+    {"JZER x", "0101 (0x5)", "0101 xxxx xxxx xxxx", "Se AC == 0: PC := x", "Salta para x se AC for igual a zero"},
+    {"JUMP x", "0110 (0x6)", "0110 xxxx xxxx xxxx", "PC := x", "Salto incondicional para o endereço x"},
+    {"LOCO c", "0111 (0x7)", "0111 cccc cccc cccc", "AC := c (0..4095)", "Carrega constante imediata c no AC"},
+    {"LODL x", "1000 (0x8)", "1000 xxxx xxxx xxxx", "AC := Mem[SP + x]", "Carrega dado relativo ao ponteiro de pilha SP"},
+    {"STOL x", "1001 (0x9)", "1001 xxxx xxxx xxxx", "Mem[SP + x] := AC", "Grava AC relativo ao ponteiro de pilha SP"},
+    {"ADDL x", "1010 (0xA)", "1010 xxxx xxxx xxxx", "AC := AC + Mem[SP + x]", "Soma dado relativo a SP ao AC"},
+    {"SUBL x", "1011 (0xB)", "1011 xxxx xxxx xxxx", "AC := AC - Mem[SP + x]", "Subtrai dado relativo a SP do AC"},
+    {"JNEG x", "1100 (0xC)", "1100 xxxx xxxx xxxx", "Se AC < 0: PC := x", "Salta para x se AC for negativo"},
+    {"JNZE x", "1101 (0xD)", "1101 xxxx xxxx xxxx", "Se AC != 0: PC := x", "Salta para x se AC for diferente de zero"},
+    {"CALL x", "1110 (0xE)", "1110 xxxx xxxx xxxx", "SP:=SP-1; Mem[SP]:=PC; PC:=x", "Chama sub-rotina salvando retorno na pilha"},
+    {"PSHI",   "1111 000",   "1111 0000 0000 0000", "SP:=SP-1; Mem[SP]:=Mem[AC]", "Empilha valor apontado indiretamente por AC"},
+    {"POPI",   "1111 001",   "1111 0010 0000 0000", "Mem[AC]:=Mem[SP]; SP:=SP+1", "Desempilha para o endereço apontado por AC"},
+    {"PUSH",   "1111 010",   "1111 0100 0000 0000", "SP:=SP-1; Mem[SP]:=AC", "Empilha o valor atual do AC"},
+    {"POP",    "1111 011",   "1111 0110 0000 0000", "AC:=Mem[SP]; SP:=SP+1", "Desempilha o topo da pilha para o AC"},
+    {"RETN",   "1111 100",   "1111 1000 0000 0000", "PC:=Mem[SP]; SP:=SP+1", "Retorna de sub-rotina restaurando o PC"},
+    {"SWAP",   "1111 101",   "1111 1010 0000 0000", "AC <-> SP", "Troca os valores entre AC e SP"},
+    {"INSP y", "1111 110",   "1111 1100 yyyy yyyy", "SP := SP + y (0..255)", "Incrementa SP (libera espaço na pilha)"},
+    {"DESP y", "1111 111",   "1111 1110 yyyy yyyy", "SP := SP - y (0..255)", "Decrementa SP (aloca espaço na pilha)"},
+    {"HALT",   "1111 1111",  "1111 1111 1111 1111", "Parada (0xFFFF)", "Encerra a execução do processador"}
+};
+
+for (Object[] linha : dadosISA) {
+    modeloISA.addRow(linha);
+}
+
+JTable tabelaISA = criarTabelaEstilizada(modeloISA);
+tabelaISA.getColumnModel().getColumn(0).setPreferredWidth(85);
+tabelaISA.getColumnModel().getColumn(1).setPreferredWidth(115);
+tabelaISA.getColumnModel().getColumn(2).setPreferredWidth(165);
+tabelaISA.getColumnModel().getColumn(3).setPreferredWidth(210);
+tabelaISA.getColumnModel().getColumn(4).setPreferredWidth(320);
+
+abasMemoria.addTab("Tabela ISA (MAC-1)", new JScrollPane(tabelaISA));
+
         JSplitPane splitVertical = new JSplitPane(JSplitPane.VERTICAL_SPLIT, metadeSuperior, abasMemoria);
         splitVertical.setResizeWeight(0.50);
         splitVertical.setDividerSize(6);

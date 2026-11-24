@@ -32,27 +32,14 @@ public enum Campo {
     public int getPosicao() { return posicao; }
     public int getLargura() { return largura; }
 
-    /** Retorna a máscara com 'largura' bits ligados. Ex: largura=4 → 0b1111 */
     public int mascara() {
         return (1 << largura) - 1;
     }
 
-    /**
-     * Extrai o valor deste campo de uma microinstrução de 32 bits.
-     * Usado pelo MIR para decodificar.
-     *
-     * Ex: Campo.ALU.extrair(0x08400005) → 2
-     */
     public int extrair(int microInstrucao) {
         return (microInstrucao >>> posicao) & mascara();
     }
 
-    /**
-     * Insere um valor neste campo dentro de uma microinstrução existente.
-     * Usado pelo Montador para codificar.
-     *
-     * Ex: Campo.ALU.inserir(0, 2) → seta os bits 28-27 para 10 (binário)
-     */
     public int inserir(int microInstrucao, int valor) {
         // Limpa os bits deste campo
         int limpo = microInstrucao & ~(mascara() << posicao);

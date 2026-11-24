@@ -71,28 +71,6 @@ public class Processador {
         this.finalizado = false;
         this.descricaoMicroinstrucaoAtual = "Aguardando início...";
     }
-
-    /**
-     * Firmware padrão do MIC-1: interpreta o conjunto de instruções MAC-1 completo.
-     *
-     * Convenções (iguais ao hardware simulado):
-     *  - AMUX = 1 -> entrada A da ULA vem do barramento A (registrador);  AMUX = 0 -> vem do MBR
-     *  - COND: 0 = segue sequencial (MPC+1), 1 = salta se N, 2 = salta se Z, 3 = salta sempre
-     *  - ALU : 0 = A+B, 1 = A AND B, 2 = A OR B, 3 = NOT A
-     *  - MAR sempre carrega do barramento B
-     *  - Leitura/escrita na memória levam 2 microinstruções seguidas com RD/WR = 1
-     *  - Os flags N/Z vêm do resultado da ULA da própria microinstrução
-     *
-     * Mapa de endereços:
-     *   0-2   busca (fetch)            3-5, 8, 15, 16, 18   decodificação 0x0..0x7
-     *   6-7, 9, 11, 20-26, 32-33, 40-43   LODD/STOD/ADDD/SUBD
-     *   17, 19, 27-29, 38-39, 44-46    JPOS/JUMP/JZER/LOCO e "PC := IR & AMASK"
-     *   31                             HALT
-     *   64-72, 110-113                 decodificação 0x8..0xB (LODL/STOL/ADDL/SUBL)
-     *   80-86                          0xC/0xD (JNEG/JNZE)
-     *   90-91, 120-122                 0xE (CALL)
-     *   92-108, 130-149                0xF (PSHI/POPI/PUSH/POP/RETN/SWAP/INSP/DESP/HALT)
-     */
     private int[] gerarFirmwarePadrao() {
         int[] rom = new int[256];
 
@@ -394,7 +372,7 @@ public class Processador {
         }
     }
 
-    /** Zera registradores, memória e cache. Mantém o microprograma atual. */
+    
     public void resetar() {
         inicializarComponentes(microprogramaAtual);
     }

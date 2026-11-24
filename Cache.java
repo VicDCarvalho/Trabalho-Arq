@@ -89,8 +89,7 @@ public class Cache {
 
         LinhaCache linha = linhas[indice];
 
-        // Se a linha estiver ocupada e modificada,
-        // escreve o bloco antigo na memoria principal
+        
         if (linha.valido && linha.dirty) {
             escreverBlocoMemoria(indice);
         }

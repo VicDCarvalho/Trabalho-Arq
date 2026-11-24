@@ -36,16 +36,13 @@ public class ULA{
     }
 
     private void atualizarFlags(int resultado){
-        this.flagZ = (resultado == 0);                  //Se o resultado for igual a 0 a flagZ é acionada
+        this.flagZ = (resultado == 0);                  
         
-        this.flagN = (resultado & 0x8000) != 0;         //0x8000 representa um valor onde apenas o bit mais significativo = 1
-                                                        //se resultado for negativo essa conta dará 1 e se for positivo será 0
+        this.flagN = (resultado & 0x8000) != 0;         
+                                                        
     }
 
     public boolean getFlagN() { return flagN; }
     public boolean getFlagZ() { return flagZ; }
 }   
 
-//O int em java tem 32 bits, porém no MIC-1 a entrada tem que ter 16 bits 
-//Se usa o '& 0xFFFF' para caso a entrada tenha mais que 16 bits os bits extras sejam cortados
-//Como 0xFFFF = 0000 0000 0000 0000 1111 1111 1111 1111, se você usar a operação '&' junto com ela, todos os bits extras serão removidos(Overflow)
